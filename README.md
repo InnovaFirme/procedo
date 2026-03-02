@@ -16,12 +16,20 @@ A type-safe, fluent TypeScript container for executing procedures and handlers w
 
 ## Installation
 
+Install directly from GitHub:
+
 ```bash
-npm install procedo
+npm install gaspect/procedo
 # or
-pnpm add procedo
+pnpm add gaspect/procedo
 # or
-yarn add procedo
+yarn add gaspect/procedo
+```
+
+Or using the full URL:
+
+```bash
+npm install https://github.com/gaspect/procedo
 ```
 
 ## Quick Start
