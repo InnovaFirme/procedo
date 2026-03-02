@@ -3,9 +3,9 @@ import { CancellationToken } from "./cancellation";
 export type Handler<I = void, O = any> =
     (input: I, token: CancellationToken) => Promise<O>;
 
-export type Middleware<I = void, O = any> =
+export type Middleware<I = any, O = any, NextI = I, NextO = O> =
     (input: I,
-        next: (input: any) => Promise<any>,
+        next: (input: NextI) => Promise<NextO>,
         token: CancellationToken
     ) => Promise<O>;
 

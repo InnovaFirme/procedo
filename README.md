@@ -385,20 +385,91 @@ const app = middleware(api(container()), loggingMiddleware)
 // Execution order: loggingMiddleware → timingMiddleware → handler
 ```
 
-### `compound(middleware: Middleware[])`
+### `compound(...middlewares: Middleware[])`
 
-Composes multiple middleware functions into a single middleware:
+Composes multiple middleware functions into a single middleware. Middlewares execute in an **onion pattern** (also known as the Russian doll model):
 
 ```typescript
 import { compound } from 'procedo';
 
-const combinedMw = compound(loggingMiddleware, timingMiddleware);
+// Execution flow: outer → middle → inner → handler → inner → middle → outer
+const combinedMw = compound(outerMiddleware, middleMiddleware, innerMiddleware);
 
 const app = api(container())
   .register('my_procedure')
   .as<Input, Output>()
   .middleware(combinedMw)
   .using(someHandler);
+```
+
+#### Onion Pattern Execution
+
+The **first** middleware in the list is the **outermost layer** (closest to the caller), and the **last** is the **innermost layer** (closest to the handler):
+
+```typescript
+const loggingMiddleware: Middleware = async (input, next, token) => {
+  console.log('Outer: before');
+  const result = await next(input);
+  console.log('Outer: after');
+  return result;
+};
+
+const timingMiddleware: Middleware = async (input, next, token) => {
+  console.log('Inner: before');
+  const start = Date.now();
+  const result = await next(input);
+  console.log(`Inner: after (${Date.now() - start}ms)`);
+  return result;
+};
+
+compound(loggingMiddleware, timingMiddleware);
+
+// Output when called:
+// Outer: before
+// Inner: before
+// [handler executes]
+// Inner: after (5ms)
+// Outer: after
+```
+
+#### Type Transformation with Compound
+
+When composing middlewares with different input/output types, the **first middleware defines the external API** and each subsequent middleware transforms for the next:
+
+```typescript
+// First middleware (outermost): defines external API types
+const apiLayer: Middleware<
+  { userId: string; token: string },  // External API input
+  { status: string; data: User },     // External API output
+  number,                              // Pass to next middleware
+  User                                 // Receive from next middleware
+> = async (input, next, token) => {
+  if (input.token !== 'valid') {
+    return { status: 'error', data: null };
+  }
+  const user = await next(parseInt(input.userId));
+  return { status: 'ok', data: user };
+};
+
+// Second middleware (closer to handler)
+const validationLayer: Middleware<
+  number,  // Receive from previous middleware
+  User,    // Return to previous middleware
+  number,  // Pass to handler (same type here)
+  User     // Receive from handler (same type here)
+> = async (input, next, token) => {
+  if (input <= 0) throw new Error('Invalid ID');
+  return await next(input);
+};
+
+const app = api(container())
+  .register('get_user')
+  .as<number, User>()  // Handler types
+  .middleware(compound(apiLayer, validationLayer))
+  .using(userHandler);
+
+// External API signature: { userId: string; token: string } → { status: string; data: User }
+await app.get_user({ userId: '123', token: 'valid' });
 ```
 
 ### Custom Middleware
@@ -419,6 +490,148 @@ const timingMiddleware: Middleware = async (input, next, token) => {
     throw error;
   }
 };
+```
+
+### Type Transformations with Middleware
+
+Middleware can transform both input and output types. This allows you to adapt the external API of your procedures while keeping the handler implementation separate.
+
+#### Type Signature
+
+```typescript
+type Middleware<I = any, O = any, NextI = I, NextO = O> = (
+  input: I,                           // Type received by middleware
+  next: (input: NextI) => Promise<NextO>,  // Type passed to next handler
+  token: CancellationToken
+) => Promise<O>;                      // Type returned by middleware
+```
+
+Where:
+- `I`: Input type that the middleware **receives** from the caller
+- `O`: Output type that the middleware **returns** to the caller
+- `NextI`: Input type that the middleware **passes** to the next handler (defaults to `I`)
+- `NextO`: Output type that the next handler **returns** (defaults to `O`)
+
+#### Input Transformation
+
+Transform the input before it reaches the handler:
+
+```typescript
+// Handler expects a number
+const app = api(container())
+  .register('getUserData')
+  .as<number, UserData>()
+  .middleware<{ userId: number; metadata: string }>(
+    async (input, next, token) => {
+      // Receive { userId, metadata }, pass only userId to handler
+      return await next(input.userId);
+    }
+  )
+  .using(userHandler);
+
+// Caller passes an object
+await app.getUserData({ userId: 123, metadata: 'extra info' });
+```
+
+#### Output Transformation
+
+Transform the output from the handler:
+
+```typescript
+// Handler returns raw data
+const app = api(container())
+  .register('fetchData')
+  .as<number, RawData>()
+  .middleware<number, FormattedResponse>(
+    async (input, next, token) => {
+      const rawData = await next(input);
+      // Transform output
+      return {
+        success: true,
+        data: rawData,
+        timestamp: new Date()
+      };
+    }
+  )
+  .using(dataHandler);
+
+// Caller receives FormattedResponse
+const response = await app.fetchData(123);
+// response: { success: true, data: RawData, timestamp: Date }
+```
+
+#### Input AND Output Transformation
+
+Combine both transformations:
+
+```typescript
+type RequestPayload = { userId: number; options: Options };
+type ResponseEnvelope = { success: boolean; data: UserData };
+
+const app = api(container())
+  .register('getUser')
+  .as<number, UserData>()  // Handler types
+  .middleware<RequestPayload, ResponseEnvelope>(
+    async (input, next, token) => {
+      // Transform input: extract userId
+      const userData = await next(input.userId);
+      // Transform output: wrap in envelope
+      return {
+        success: true,
+        data: userData
+      };
+    }
+  )
+  .using(userHandler);
+
+// API signature is RequestPayload → ResponseEnvelope
+const response = await app.getUser({ 
+  userId: 123, 
+  options: { includeProfile: true } 
+});
+// response: { success: true, data: UserData }
+```
+
+#### Real-World Example: API Validation & Formatting
+
+```typescript
+import type { Middleware } from 'procedo';
+
+// Middleware that validates input and formats output
+const apiMiddleware: Middleware<
+  { id: number; token: string },  // API expects this
+  { status: 'ok' | 'error'; result: any },  // API returns this
+  number,  // Handler receives this
+  any      // Handler returns this
+> = async (input, next, token) => {
+  // Input validation
+  if (!input.token || input.token !== 'valid-token') {
+    return { status: 'error', result: 'Invalid token' };
+  }
+  
+  try {
+    // Pass validated ID to handler
+    const result = await next(input.id);
+    // Format success response
+    return { status: 'ok', result };
+  } catch (error) {
+    // Format error response
+    return { status: 'error', result: error.message };
+  }
+};
+
+const app = api(container())
+  .register('get_user_data')
+  .as<number, UserData>()
+  .middleware(apiMiddleware)
+  .using(postgres(pool));
+
+// Usage matches the middleware's outer types
+const response = await app.get_user_data({ 
+  id: 123, 
+  token: 'valid-token' 
+});
+// response: { status: 'ok', result: UserData }
 ```
 
 ## Handler Implementations

@@ -1,4 +1,4 @@
-import { container, api, using, jscriptify, middleware } from '../src/index.js';
+import { container, api, using, jscriptify, middleware, compound } from '../src/index.js';
 import type { Middleware } from '../src/index.js';
 import { postgres } from './handlers';
 import { Pool } from 'pg'
@@ -120,4 +120,88 @@ const jsApi7 = jscriptify(c7);
 const result7 = await jsApi7.getUserData(123);
 console.log(`Result: ${result7.procedureName}, input: ${result7.input}`);
 
+
+const c8 = jscriptify(api(container()))
+    .register('getUserData')
+    .as<number, any>()
+    .using(mockHandler);
+
+
+
+const testMiddlewareTyping = (input: { id: number, ignore: any }, next: any) => {
+    console.log('Middleware input:', input);
+    return next(input.id);
+}
+
+console.log('\n=== Ex 9: Middleware with INPUT transformation ===');
+const c9 = api(container())
+    .register('getUserData')
+    .as<number, any>()
+    .middleware(testMiddlewareTyping)
+    .using(mockHandler);
+
+// El tipo de c9.getUserData ahora debería aceptar { id: number, ignore: any }
+// NO solo number, porque el middleware transforma el tipo
+const result9 = await c9.getUserData({ id: 456, ignore: 'ignored' });
+console.log(`Result: ${result9.procedureName}, input: ${result9.input}`);
+
+// Si intentáramos pasar solo un número, TypeScript debería dar error:
+// const result9Wrong = await c9.getUserData(456); // ❌ Error: Expected { id, ignore }, got number
+
+console.log('\n=== Ex 10: Middleware with OUTPUT transformation ===');
+const outputTransformMiddleware: Middleware<number, string, number, any> = async (input, next, token) => {
+    const result = await next(input);
+    return `Transformed: ${JSON.stringify(result)}`;
+};
+
+const c10 = api(container())
+    .register('processData')
+    .as<number, any>()
+    .middleware(outputTransformMiddleware)
+    .using(mockHandler);
+
+const result10 = await c10.processData(789);
+console.log(`Output type is now string: ${result10}`);
+
+console.log('\n=== Ex 11: Middleware CHAIN with compound (Onion Pattern) ===');
+type RequestPayload = { userId: number; metadata: string };
+type ResponseData = { success: boolean; data: any };
+
+// Middleware layers execute in onion pattern:
+// Call: firstTransform → fullTransformMiddleware → handler → fullTransformMiddleware → firstTransform → Return
+
+// Layer 1 (OUTER - closest to caller): defines external API signature
+const firstTransform: Middleware<{ id: number, meta: string }, boolean, RequestPayload, ResponseData> = async (input, next, _) => {
+    console.log('Chain transform - before full transform');
+    const result: ResponseData = await next({
+        userId: input.id,
+        metadata: input.meta
+    });
+    console.log('Chain transform - after full transform');
+    return result.success;
+}
+
+// Layer 2 (INNER - closer to handler): transforms for the handler
+const fullTransformMiddleware: Middleware<RequestPayload, ResponseData, number, any> = async (input, next, token) => {
+    console.log(`Full transform - received:`, input);
+    const handlerResult = await next(input.userId);
+    return {
+        success: true,
+        data: handlerResult
+    };
+};
+
+const c11 = api(container())
+    .register('fullTransform')
+    .as<number, any>()  // Handler expects: number → any
+    .middleware(compound(firstTransform, fullTransformMiddleware))
+    .using(mockHandler);
+
+// External API signature (defined by firstTransform): { id: number, meta: string } → boolean
+const result11 = await c11.fullTransform({ id: 999, meta: 'test' });
+console.log(`Full transform result (boolean):`, result11);
+
 await pool.end();
+
+
+

@@ -9,6 +9,40 @@ type CamelCaseAdapterMethods<T extends Record<string, any>> = {
     [K in keyof T as K extends string ? SnakeToCamelCase<K> : K]: (input?: T[K]['input']) => Promise<T[K]['output']>;
 };
 
+type CamelCaseRegisterBuilder<T extends Record<string, any>, Name extends string> = {
+    as<I, O>(): CamelCaseRegisterBuilderWithTypes<T, Name, I, O>;
+    middleware(mw: Middleware<any, any>): CamelCaseRegisterBuilderWithMiddleware<T, Name>;
+};
+
+type CamelCaseRegisterBuilderWithTypes<T extends Record<string, any>, Name extends string, I, O> = {
+    using(factory: HandlerFactory): CamelCaseTypedContainer<T & { [K in Name]: { input: I; output: O } }>;
+    middleware<I2 = I, O2 = O>(mw: Middleware<I2, O2, I, O>): CamelCaseRegisterBuilderComplete<T, Name, I2, O2>;
+};
+
+type CamelCaseRegisterBuilderWithMiddleware<T extends Record<string, any>, Name extends string> = {
+    as<I, O>(): CamelCaseRegisterBuilderComplete<T, Name, I, O>;
+    using(factory: HandlerFactory): CamelCaseTypedContainer<T & { [K in Name]: { input: any; output: any } }>;
+};
+
+type CamelCaseRegisterBuilderComplete<T extends Record<string, any>, Name extends string, I, O> = {
+    using(factory: HandlerFactory): CamelCaseTypedContainer<T & { [K in Name]: { input: I; output: O } }>;
+};
+
+type CamelCaseTypedContainer<T extends Record<string, any>> = CamelCaseAdapterMethods<T> & {
+    register<Name extends string>(name: Name): CamelCaseRegisterBuilder<T, Name>;
+    as<I, O, LastKey extends string = string>(): CamelCaseTypedContainer<
+        Omit<T, LastKey> & { [K in LastKey]: { input: I; output: O } }
+    >;
+    execute<K extends keyof T>(
+        name: K,
+        input?: T[K]['input']
+    ): Promise<T[K]['output']>;
+    execute<I = any, O = any>(
+        name: string,
+        input?: I
+    ): Promise<O>;
+};
+
 type RegisterBuilder<T extends Record<string, any>, Name extends string> = {
     as<I, O>(): RegisterBuilderWithTypes<T, Name, I, O>;
     middleware(mw: Middleware<any, any>): RegisterBuilderWithMiddleware<T, Name>;
@@ -16,7 +50,7 @@ type RegisterBuilder<T extends Record<string, any>, Name extends string> = {
 
 type RegisterBuilderWithTypes<T extends Record<string, any>, Name extends string, I, O> = {
     using(factory: HandlerFactory): TypedContainer<T & { [K in Name]: { input: I; output: O } }>;
-    middleware(mw: Middleware<I, O>): RegisterBuilderComplete<T, Name, I, O>;
+    middleware<I2 = I, O2 = O>(mw: Middleware<I2, O2, I, O>): RegisterBuilderComplete<T, Name, I2, O2>;
 };
 
 type RegisterBuilderWithMiddleware<T extends Record<string, any>, Name extends string> = {
@@ -76,7 +110,7 @@ export function api<T extends Record<string, any>>(
                             const newContainer = typedBuilder.using(factory);
                             return api(newContainer);
                         },
-                        middleware: (mw: Middleware<I, O>) => {
+                        middleware: <I2 = I, O2 = O>(mw: Middleware<I2, O2, I, O>) => {
                             const mwBuilder = typedBuilder.middleware(mw);
                             return {
                                 using: (factory: HandlerFactory) => {
@@ -198,9 +232,64 @@ function camelToSnake(str: string): string {
     return str.replaceAll(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
 }
 
-export function jscriptify<T extends Record<string, any>>(container: TypedContainer<T>): CamelCaseAdapterMethods<T> {
-    return new Proxy({} as CamelCaseAdapterMethods<T>, {
-        get(_target, prop: string) {
+export function jscriptify<T extends Record<string, any>>(container: TypedContainer<T>): CamelCaseTypedContainer<T> {
+    const base = {
+        execute: container.execute.bind(container),
+        register: <Name extends string>(name: Name): CamelCaseRegisterBuilder<T, Name> => {
+            const builder = container.register(name);
+            return {
+                as: <I, O>() => {
+                    const typedBuilder = builder.as<I, O>();
+                    return {
+                        using: (factory: HandlerFactory) => {
+                            const newContainer = typedBuilder.using(factory);
+                            return jscriptify(newContainer);
+                        },
+                        middleware: <I2 = I, O2 = O>(mw: Middleware<I2, O2, I, O>) => {
+                            const mwBuilder = typedBuilder.middleware(mw);
+                            return {
+                                using: (factory: HandlerFactory) => {
+                                    const newContainer = mwBuilder.using(factory);
+                                    return jscriptify(newContainer);
+                                }
+                            };
+                        }
+                    };
+                },
+                middleware: (mw: Middleware<any, any>) => {
+                    const mwBuilder = builder.middleware(mw);
+                    return {
+                        // @ts-expect-error - Los parámetros de tipo se usan en el tipo de retorno, no en la implementación
+                        as: <I, O>() => {
+                            const completeBuilder = mwBuilder.as();
+                            return {
+                                using: (factory: HandlerFactory) => {
+                                    const newContainer = completeBuilder.using(factory);
+                                    return jscriptify(newContainer);
+                                }
+                            };
+                        },
+                        using: (factory: HandlerFactory) => {
+                            const newContainer = mwBuilder.using(factory);
+                            return jscriptify(newContainer);
+                        }
+                    };
+                }
+            };
+        },
+        as: ((...typeArgs: any[]) => {
+            // Delega al método as del container si existe
+            const result = (container as any).as ? (container as any).as() : container;
+            return jscriptify(result);
+        }) as any
+    };
+
+    return new Proxy(base, {
+        get(target, prop: string) {
+            if (prop in target) {
+                return (target as any)[prop];
+            }
+
             if (typeof prop !== 'string') return undefined;
 
             const snakeCaseName = camelToSnake(prop);
@@ -219,7 +308,7 @@ export function jscriptify<T extends Record<string, any>>(container: TypedContai
                 }
             };
         }
-    });
+    }) as CamelCaseTypedContainer<T>;
 }
 
 
@@ -230,7 +319,7 @@ type MiddlewareRegisterBuilder<T extends Record<string, any>, Name extends strin
 
 type MiddlewareRegisterBuilderWithTypes<T extends Record<string, any>, Name extends string, I, O> = {
     using(factory: HandlerFactory): TypedContainerWithMiddleware<T & { [K in Name]: { input: I; output: O } }>;
-    middleware(mw: Middleware<I, O>): MiddlewareRegisterBuilderComplete<T, Name, I, O>;
+    middleware<I2 = I, O2 = O>(mw: Middleware<I2, O2, I, O>): MiddlewareRegisterBuilderComplete<T, Name, I2, O2>;
 };
 
 type MiddlewareRegisterBuilderWithMiddleware<T extends Record<string, any>, Name extends string> = {
@@ -274,7 +363,7 @@ export function middleware<T extends Record<string, any>>(
                             const newContainer = withMwBuilder.using(factory);
                             return middleware(newContainer, defaultMiddleware);
                         },
-                        middleware: (mw: Middleware<I, O>) => {
+                        middleware: <I2 = I, O2 = O>(mw: Middleware<I2, O2, I, O>) => {
                             const combinedMw = compound(defaultMiddleware, mw);
                             const mwBuilder = typedBuilder.middleware(combinedMw);
                             return {
