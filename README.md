@@ -32,41 +32,13 @@ Or using the full URL:
 npm install https://github.com/gaspect/procedo
 ```
 
-**Nota:** Al instalar desde GitHub, el paquete se compilará automáticamente gracias al script `prepare`. Esto puede tomar unos segundos la primera vez.
+**Note:** When installing from GitHub, the package will compile automatically thanks to the `prepare` script. This may take a few seconds the first time.
 
 ## TypeScript Support
 
-Los tipos de TypeScript están incluidos automáticamente con el paquete. No necesitas instalar `@types/procedo` por separado.
+TypeScript types are included automatically with the package. You don't need to install `@types/procedo` separately.
 
-**Importante:** Al instalar desde GitHub, asegúrate de que el paquete se compile correctamente:
-
-```bash
-# La compilación ocurre automáticamente gracias al script "prepare"
-npm install gaspect/procedo
-```
-
-Si encuentras el error: `No se encuentra el módulo "procedo" ni sus declaraciones de tipos correspondientes`, verifica que:
-
-1. ✅ El paquete se instaló correctamente con npm/pnpm/yarn
-2. ✅ La carpeta `node_modules/procedo/dist` existe y contiene los archivos `.d.ts`
-3. ✅ Tu `tsconfig.json` tiene `"moduleResolution": "node"` o `"bundler"`
-
-Una vez instalado, tendrás acceso completo a todos los tipos y autocompletado en tu editor:
-
-```typescript
-import { container, api, type ContainerInstance, type HandlerFactory } from 'procedo';
-
-// Los tipos se infieren automáticamente
-const app = api(container())
-  .register('myProcedure')
-  .as<{ id: number }, { name: string }>()
-  .using(myHandler);
-
-// TypeScript validará los tipos de entrada y salida
-const result = await app.myProcedure({ id: 123 }); // result tiene tipo { name: string }
-```
-
-**Configuración recomendada en `tsconfig.json`:**
+**Recommended `tsconfig.json` configuration:**
 
 ```json
 {
