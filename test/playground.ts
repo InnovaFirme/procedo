@@ -1,4 +1,4 @@
-import { container, api, using, jscriptify, middleware, compound } from '../src/index.js';
+import { container, api, using, jscriptify, middleware } from '../src/index.js';
 import type { Middleware } from '../src/index.js';
 import { postgres } from './handlers';
 import { Pool } from 'pg'
@@ -128,7 +128,7 @@ const c8 = jscriptify(api(container()))
 
 
 
-const testMiddlewareTyping = (input: { id: number, ignore: any }, next: any) => {
+const testMiddlewareTyping = async (input: { id: number, ignore: any }, next: (input: number) => Promise<any>, _: any): Promise<any> => {
     console.log('Middleware input:', input);
     return next(input.id);
 }
@@ -163,7 +163,7 @@ const c10 = api(container())
 const result10 = await c10.processData(789);
 console.log(`Output type is now string: ${result10}`);
 
-console.log('\n=== Ex 11: Middleware CHAIN with compound (Onion Pattern) ===');
+console.log('\n=== Ex 11: Middleware CHAIN with chained .middleware() (Onion Pattern) ===');
 type RequestPayload = { userId: number; metadata: string };
 type ResponseData = { success: boolean; data: any };
 
@@ -194,14 +194,158 @@ const fullTransformMiddleware: Middleware<RequestPayload, ResponseData, number, 
 const c11 = api(container())
     .register('fullTransform')
     .as<number, any>()  // Handler expects: number → any
-    .middleware(compound(firstTransform, fullTransformMiddleware))
+    .middleware(fullTransformMiddleware)   // inner layer first
+    .middleware(firstTransform)            // outer layer wraps it
     .using(mockHandler);
 
 // External API signature (defined by firstTransform): { id: number, meta: string } → boolean
 const result11 = await c11.fullTransform({ id: 999, meta: 'test' });
 console.log(`Full transform result (boolean):`, result11);
 
-await pool.end();
+console.log('\n=== Ex 12: Chained inline middleware functions ===');
+// next se infiere automáticamente en cada capa gracias al encadenamiento
 
+const c12 = api(container())
+    .register('processUser')
+    .as<number, { name: string; age: number }>()  // Handler types
+    // Inner layer: closest to handler
+    .middleware(async (input: { id: number }, next, _) => {
+        const user = await next(input.id);  // next inferido: (number) => Promise<{ name, age }>
+        return `${user.name} (${user.age})`;
+    })
+    // Outer layer: closest to caller
+    .middleware(async (input: { userId: string; token: string }, next, _) => {
+        if (input.token !== 'valid-token') throw new Error('Invalid token');
+        const result = await next({ id: Number.parseInt(input.userId) });  // next inferido: ({ id }) => Promise<string>
+        return result.toUpperCase();
+    })
+    .using((name) => async (userId: number) => ({
+        name: `User${userId}`,
+        age: 25 + userId
+    }));
+
+const result12 = await c12.processUser({ userId: '42', token: 'valid-token' });
+console.log(`Processed user with chained middlewares: ${result12}`);
+
+console.log('\n=== Ex 13: Three-layer middleware chain ===');
+
+const c13 = api(container())
+    .register('complexAuth')
+    .as<number, string>()  // Handler: number → string
+    // Layer 3 (innermost): Data transformation
+    .middleware(async (input: number, next, _) => {
+        console.log('Layer 3: Transforming...');
+        const raw = await next(input);  // next: (number) => Promise<string>
+        return raw.toUpperCase();
+    })
+    // Layer 2 (middle): Authorization check
+    .middleware(async (input: { id: number; verified: boolean }, next, _) => {
+        console.log('Layer 2: Authorizing...');
+        if (!input.verified) throw new Error('Not verified');
+        const data = await next(input.id);  // next: (number) => Promise<string>
+        return `[${data}]`;
+    })
+    // Layer 1 (outermost): Authentication
+    .middleware(async (input: { token: string; userId: string }, next, _) => {
+        console.log('Layer 1: Authenticating...');
+        if (input.token !== 'secret') throw new Error('Unauthorized');
+        const result = await next({ id: Number.parseInt(input.userId), verified: true });  // next: ({ id, verified }) => Promise<string>
+        return `AUTHENTICATED: ${result}`;
+    })
+    .using((name) => async (id: number) => `user_${id}`);
+
+const result13 = await c13.complexAuth({ token: 'secret', userId: '99' });
+console.log(`Complex auth result: ${result13}`);
+
+console.log('\n=== Ex 14: Chained .middleware() - Inferencia automática! ===');
+// Encadenar .middleware() de innermost a outermost.
+// Cada llamada conoce los tipos del paso anterior → next siempre tipado.
+const c14 = api(container())
+    .register('variadicTest')
+    .as<number, string>()  // Handler types: number → string
+    // Layer 3 (innermost): next = handler → (number) => Promise<string>
+    .middleware(async (input: number, next, _) => {
+        console.log('Chained L3: Format');
+        const result = await next(input);
+        return `ID:${result}`;
+    })
+    // Layer 2: next = L3 → (number) => Promise<string>
+    .middleware(async (input: number, next, _) => {
+        console.log('Chained L2: Transform');
+        return await next(input + 100);
+    })
+    // Layer 1 (outermost): next = L2 → (number) => Promise<string>
+    .middleware(async (input: { token: string; userId: string }, next, _) => {
+        console.log('Chained L1: Auth check');
+        const authenticated = input.token === 'valid';
+        if (!authenticated) throw new Error('Unauthorized');
+        return await next(Number.parseInt(input.userId));
+    })
+    .using((name) => async (id: number) => `user_${id}`);
+
+const result14 = await c14.variadicTest({ token: 'valid', userId: '42' });
+console.log(`Variadic result: ${result14}`);
+
+console.log('\n=== Ex 15: Verificar que TypeScript detecta errores de tipos ===');
+const c15 = api(container())
+    .register('typeCheckTest')
+    .as<number, string>()
+    // Middleware 2 (innermost): number → string (conecta con handler)
+    .middleware(async (input: number, next, _) => {
+        console.log('Adding 50 and formatting');
+        const result = await next(input + 50);
+        return `Result: ${result}`;
+    })
+    // Middleware 1 (outermost): string → number
+    .middleware(async (input: string, next, _) => {
+        console.log('Converting string to number');
+        return await next(Number.parseInt(input));
+    })
+    .using((name) => async (n: number) => `value_${n}`);
+
+// API externa acepta string, retorna string
+const result15 = await c15.typeCheckTest('100');
+console.log(result15);
+
+console.log('\n=== Ex 16: Chained global middleware ===');
+const authMiddleware: Middleware = async (input, next, _) => {
+    console.log('[Auth] Checking credentials...');
+    const result = await next(input);
+    console.log('[Auth] Done');
+    return result;
+};
+
+const c16 = middleware(api(container()), loggingMiddleware)
+    .middleware(timingMiddleware)
+    .middleware(authMiddleware)
+    .register('getUserData')
+    .as<number, any>()
+    .using(mockHandler);
+
+// Execution order: loggingMiddleware → timingMiddleware → authMiddleware → handler
+const result16 = await c16.getUserData(42);
+console.log(`Result: ${result16.procedureName}`);
+
+console.log('\n=== Ex 17: Global + per-procedure chained middleware ===');
+const c17 = middleware(api(container()), loggingMiddleware)
+    .middleware(timingMiddleware)
+    .register('processOrder')
+    .as<number, string>()
+    // Per-procedure middleware chain on top of globals
+    .middleware(async (input: number, next, _) => {
+        const raw = await next(input);
+        return raw.toUpperCase();
+    })
+    .middleware(async (input: { orderId: number; priority: string }, next, _) => {
+        console.log(`[Priority: ${input.priority}]`);
+        return await next(input.orderId);
+    })
+    .using((name) => async (id: number) => `order_${id}`);
+
+// Execution: loggingMw → timingMw → priority mw → uppercase mw → handler
+const result17 = await c17.processOrder({ orderId: 7, priority: 'high' });
+console.log(`Order result: ${result17}`);
+
+await pool.end();
 
 

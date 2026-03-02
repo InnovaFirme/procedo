@@ -1,5 +1,15 @@
 import type { Middleware, HandlerFactory } from './types';
-import { compound } from './middlewares';
+
+// Inline compose: chains middlewares in onion pattern (no external compound needed)
+function compose(...middlewares: Middleware<any, any, any, any>[]): Middleware<any, any, any, any> {
+    return (input, next, token) => {
+        const dispatch = (index: number, input: any): Promise<any> => {
+            if (index === middlewares.length) return next(input);
+            return middlewares[index](input, (nextInput) => dispatch(index + 1, nextInput), token);
+        };
+        return dispatch(0, input);
+    };
+}
 
 type SnakeToCamelCase<S extends string> = S extends `${infer T}_${infer U}`
     ? `${T}${Capitalize<SnakeToCamelCase<U>>}`
@@ -16,7 +26,12 @@ type CamelCaseRegisterBuilder<T extends Record<string, any>, Name extends string
 
 type CamelCaseRegisterBuilderWithTypes<T extends Record<string, any>, Name extends string, I, O> = {
     using(factory: HandlerFactory): CamelCaseTypedContainer<T & { [K in Name]: { input: I; output: O } }>;
-    middleware<I2 = I, O2 = O>(mw: Middleware<I2, O2, I, O>): CamelCaseRegisterBuilderComplete<T, Name, I2, O2>;
+    middleware<I2, O2>(mw: Middleware<I2, O2, I, O>): CamelCaseRegisterBuilderChain<T, Name, I2, O2>;
+};
+
+type CamelCaseRegisterBuilderChain<T extends Record<string, any>, Name extends string, I, O> = {
+    using(factory: HandlerFactory): CamelCaseTypedContainer<T & { [K in Name]: { input: I; output: O } }>;
+    middleware<I2, O2>(mw: Middleware<I2, O2, I, O>): CamelCaseRegisterBuilderChain<T, Name, I2, O2>;
 };
 
 type CamelCaseRegisterBuilderWithMiddleware<T extends Record<string, any>, Name extends string> = {
@@ -50,7 +65,12 @@ type RegisterBuilder<T extends Record<string, any>, Name extends string> = {
 
 type RegisterBuilderWithTypes<T extends Record<string, any>, Name extends string, I, O> = {
     using(factory: HandlerFactory): TypedContainer<T & { [K in Name]: { input: I; output: O } }>;
-    middleware<I2 = I, O2 = O>(mw: Middleware<I2, O2, I, O>): RegisterBuilderComplete<T, Name, I2, O2>;
+    middleware<I2, O2>(mw: Middleware<I2, O2, I, O>): RegisterBuilderChain<T, Name, I2, O2>;
+};
+
+type RegisterBuilderChain<T extends Record<string, any>, Name extends string, I, O> = {
+    using(factory: HandlerFactory): TypedContainer<T & { [K in Name]: { input: I; output: O } }>;
+    middleware<I2, O2>(mw: Middleware<I2, O2, I, O>): RegisterBuilderChain<T, Name, I2, O2>;
 };
 
 type RegisterBuilderWithMiddleware<T extends Record<string, any>, Name extends string> = {
@@ -103,22 +123,27 @@ export function api<T extends Record<string, any>>(
         register: <Name extends string>(name: Name): RegisterBuilder<T, Name> => {
             const builder = (source as any).register(name);
             return {
+                // @ts-expect-error - Implementation types are erased at runtime; overloads provide type safety
                 as: <I, O>() => {
                     const typedBuilder = builder.as();
+
+                    const createChain = (middlewares: any[]): any => ({
+                        using: (factory: HandlerFactory) => {
+                            const composed = middlewares.length === 1
+                                ? middlewares[0]
+                                : compose(...middlewares);
+                            const mwBuilder = typedBuilder.middleware(composed);
+                            return api(mwBuilder.using(factory));
+                        },
+                        middleware: (mw: any) => createChain([mw, ...middlewares])
+                    });
+
                     return {
                         using: (factory: HandlerFactory) => {
                             const newContainer = typedBuilder.using(factory);
                             return api(newContainer);
                         },
-                        middleware: <I2 = I, O2 = O>(mw: Middleware<I2, O2, I, O>) => {
-                            const mwBuilder = typedBuilder.middleware(mw);
-                            return {
-                                using: (factory: HandlerFactory) => {
-                                    const newContainer = mwBuilder.using(factory);
-                                    return api(newContainer);
-                                }
-                            };
-                        }
+                        middleware: (mw: any) => createChain([mw])
                     };
                 },
                 middleware: (mw: Middleware<any, any>) => {
@@ -240,20 +265,24 @@ export function jscriptify<T extends Record<string, any>>(container: TypedContai
             return {
                 as: <I, O>() => {
                     const typedBuilder = builder.as<I, O>();
+
+                    const createChain = (middlewares: any[]): any => ({
+                        using: (factory: HandlerFactory) => {
+                            const composed = middlewares.length === 1
+                                ? middlewares[0]
+                                : compose(...middlewares);
+                            const mwBuilder = typedBuilder.middleware(composed);
+                            return jscriptify(mwBuilder.using(factory));
+                        },
+                        middleware: (mw: any) => createChain([mw, ...middlewares])
+                    });
+
                     return {
                         using: (factory: HandlerFactory) => {
                             const newContainer = typedBuilder.using(factory);
                             return jscriptify(newContainer);
                         },
-                        middleware: <I2 = I, O2 = O>(mw: Middleware<I2, O2, I, O>) => {
-                            const mwBuilder = typedBuilder.middleware(mw);
-                            return {
-                                using: (factory: HandlerFactory) => {
-                                    const newContainer = mwBuilder.using(factory);
-                                    return jscriptify(newContainer);
-                                }
-                            };
-                        }
+                        middleware: (mw: any) => createChain([mw])
                     };
                 },
                 middleware: (mw: Middleware<any, any>) => {
@@ -277,7 +306,7 @@ export function jscriptify<T extends Record<string, any>>(container: TypedContai
                 }
             };
         },
-        as: ((...typeArgs: any[]) => {
+        as: (() => {
             // Delega al método as del container si existe
             const result = (container as any).as ? (container as any).as() : container;
             return jscriptify(result);
@@ -319,7 +348,12 @@ type MiddlewareRegisterBuilder<T extends Record<string, any>, Name extends strin
 
 type MiddlewareRegisterBuilderWithTypes<T extends Record<string, any>, Name extends string, I, O> = {
     using(factory: HandlerFactory): TypedContainerWithMiddleware<T & { [K in Name]: { input: I; output: O } }>;
-    middleware<I2 = I, O2 = O>(mw: Middleware<I2, O2, I, O>): MiddlewareRegisterBuilderComplete<T, Name, I2, O2>;
+    middleware<I2, O2>(mw: Middleware<I2, O2, I, O>): MiddlewareRegisterBuilderChain<T, Name, I2, O2>;
+};
+
+type MiddlewareRegisterBuilderChain<T extends Record<string, any>, Name extends string, I, O> = {
+    using(factory: HandlerFactory): TypedContainerWithMiddleware<T & { [K in Name]: { input: I; output: O } }>;
+    middleware<I2, O2>(mw: Middleware<I2, O2, I, O>): MiddlewareRegisterBuilderChain<T, Name, I2, O2>;
 };
 
 type MiddlewareRegisterBuilderWithMiddleware<T extends Record<string, any>, Name extends string> = {
@@ -332,6 +366,7 @@ type MiddlewareRegisterBuilderComplete<T extends Record<string, any>, Name exten
 
 type TypedContainerWithMiddleware<T extends Record<string, any>> = AdapterMethods<T> & {
     register<Name extends string>(name: Name): MiddlewareRegisterBuilder<T, Name>;
+    middleware(mw: Middleware<any, any>): TypedContainerWithMiddleware<T>;
     as<I, O, LastKey extends string = string>(): TypedContainerWithMiddleware<
         Omit<T, LastKey> & { [K in LastKey]: { input: I; output: O } }
     >;
@@ -352,31 +387,37 @@ export function middleware<T extends Record<string, any>>(
 ): TypedContainerWithMiddleware<T> {
     const base = {
         execute: source.execute.bind(source),
+        middleware: (mw: Middleware<any, any>) => {
+            return middleware(source, compose(defaultMiddleware, mw));
+        },
         register: <Name extends string>(name: Name): MiddlewareRegisterBuilder<T, Name> => {
             const builder = (source as any).register(name);
             return {
+                // @ts-expect-error - Implementation types are erased at runtime; overloads provide type safety
                 as: <I, O>() => {
                     const typedBuilder = builder.as();
+
+                    const createChain = (middlewares: any[]): any => ({
+                        using: (factory: HandlerFactory) => {
+                            const composed = compose(defaultMiddleware, ...middlewares);
+                            const mwBuilder = typedBuilder.middleware(composed);
+                            const newContainer = mwBuilder.using(factory);
+                            return middleware(newContainer, defaultMiddleware);
+                        },
+                        middleware: (mw: any) => createChain([mw, ...middlewares])
+                    });
+
                     return {
                         using: (factory: HandlerFactory) => {
                             const withMwBuilder = typedBuilder.middleware(defaultMiddleware);
                             const newContainer = withMwBuilder.using(factory);
                             return middleware(newContainer, defaultMiddleware);
                         },
-                        middleware: <I2 = I, O2 = O>(mw: Middleware<I2, O2, I, O>) => {
-                            const combinedMw = compound(defaultMiddleware, mw);
-                            const mwBuilder = typedBuilder.middleware(combinedMw);
-                            return {
-                                using: (factory: HandlerFactory) => {
-                                    const newContainer = mwBuilder.using(factory);
-                                    return middleware(newContainer, defaultMiddleware);
-                                }
-                            };
-                        }
+                        middleware: (mw: any) => createChain([mw])
                     };
                 },
                 middleware: (mw: Middleware<any, any>) => {
-                    const combinedMw = compound(defaultMiddleware, mw);
+                    const combinedMw = compose(defaultMiddleware, mw);
                     const mwBuilder = builder.middleware(combinedMw);
                     return {
                         // @ts-expect-error - Los parámetros de tipo se usan en el tipo de retorno, no en la implementación

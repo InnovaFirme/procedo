@@ -1,5 +1,7 @@
 import { CancellationToken } from "./cancellation";
 
+export type { CancellationToken } from "./cancellation";
+
 export type Handler<I = void, O = any> =
     (input: I, token: CancellationToken) => Promise<O>;
 

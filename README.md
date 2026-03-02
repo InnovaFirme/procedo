@@ -6,7 +6,7 @@ A type-safe, fluent TypeScript container for executing procedures and handlers w
 
 - 🔒 **Type-Safe**: Full TypeScript support with generic type inference
 - 🎯 **Fluent API**: Chain calls with `.register().as<I, O>().using(factory)`
-- 🔌 **Middleware Support**: Compose error handling, logging, and custom behaviors
+- 🔌 **Middleware Support**: Chain middleware with full type inference via `.middleware()`
 - ⚡ **Proxy Pattern**: Access procedures as properties: `app.procedureName()`
 - 🎭 **Immutable Containers**: Each registration returns a new typed container
 - ⛔ **Cancellation Tokens**: Built-in support for operation cancellation
@@ -235,11 +235,12 @@ const loggingMw: Middleware = async (input, next, token) => {
 };
 
 const app = middleware(api(container()), loggingMw)
+  .middleware(timingMw)       // chain additional global layers
   .register('get_users')
   .as<void, User[]>()
   .using(someHandler);
 
-// loggingMw is applied automatically
+// loggingMw → timingMw applied automatically to all procedures
 const users = await app.get_users();
 ```
 
@@ -324,7 +325,7 @@ const app = api(container())
 
 ## Middleware
 
-Middleware allows you to intercept and modify procedure execution. You can apply middleware per-procedure or globally.
+Middleware allows you to intercept and modify procedure execution. You can apply middleware per-procedure or globally. Middleware chains are built by calling `.middleware()` multiple times — each call wraps the previous layer, and TypeScript **automatically infers** the `next` parameter type at every position.
 
 ### Per-Procedure Middleware
 
@@ -363,9 +364,9 @@ const app = middleware(api(container()), loggingMiddleware)
 // loggingMiddleware is applied to both procedures
 ```
 
-### Combining Middleware
+#### Chaining Multiple Global Middlewares
 
-Combine global and per-procedure middleware:
+Chain `.middleware()` calls to add multiple global layers:
 
 ```typescript
 const timingMiddleware: Middleware = async (input, next, token) => {
@@ -375,102 +376,123 @@ const timingMiddleware: Middleware = async (input, next, token) => {
   return result;
 };
 
-// Global logging for all procedures
-const app = middleware(api(container()), loggingMiddleware)
-  .register('create_user')
-  .as<UserInput, User>()
-  .middleware(timingMiddleware)  // Add timing to this one
-  .using(someHandler);
-
-// Execution order: loggingMiddleware → timingMiddleware → handler
-```
-
-### `compound(...middlewares: Middleware[])`
-
-Composes multiple middleware functions into a single middleware. Middlewares execute in an **onion pattern** (also known as the Russian doll model):
-
-```typescript
-import { compound } from 'procedo';
-
-// Execution flow: outer → middle → inner → handler → inner → middle → outer
-const combinedMw = compound(outerMiddleware, middleMiddleware, innerMiddleware);
-
-const app = api(container())
-  .register('my_procedure')
-  .as<Input, Output>()
-  .middleware(combinedMw)
-  .using(someHandler);
-```
-
-#### Onion Pattern Execution
-
-The **first** middleware in the list is the **outermost layer** (closest to the caller), and the **last** is the **innermost layer** (closest to the handler):
-
-```typescript
-const loggingMiddleware: Middleware = async (input, next, token) => {
-  console.log('Outer: before');
-  const result = await next(input);
-  console.log('Outer: after');
-  return result;
-};
-
-const timingMiddleware: Middleware = async (input, next, token) => {
-  console.log('Inner: before');
-  const start = Date.now();
-  const result = await next(input);
-  console.log(`Inner: after (${Date.now() - start}ms)`);
-  return result;
-};
-
-compound(loggingMiddleware, timingMiddleware);
-
-// Output when called:
-// Outer: before
-// Inner: before
-// [handler executes]
-// Inner: after (5ms)
-// Outer: after
-```
-
-#### Type Transformation with Compound
-
-When composing middlewares with different input/output types, the **first middleware defines the external API** and each subsequent middleware transforms for the next:
-
-```typescript
-// First middleware (outermost): defines external API types
-const apiLayer: Middleware<
-  { userId: string; token: string },  // External API input
-  { status: string; data: User },     // External API output
-  number,                              // Pass to next middleware
-  User                                 // Receive from next middleware
-> = async (input, next, token) => {
-  if (input.token !== 'valid') {
-    return { status: 'error', data: null };
-  }
-  const user = await next(parseInt(input.userId));
-  return { status: 'ok', data: user };
-};
-
-// Second middleware (closer to handler)
-const validationLayer: Middleware<
-  number,  // Receive from previous middleware
-  User,    // Return to previous middleware
-  number,  // Pass to handler (same type here)
-  User     // Receive from handler (same type here)
-> = async (input, next, token) => {
-  if (input <= 0) throw new Error('Invalid ID');
+const authMiddleware: Middleware = async (input, next, token) => {
+  console.log('Authenticating...');
   return await next(input);
 };
 
+// Chain global middlewares — each wraps the previous
+const app = middleware(api(container()), loggingMiddleware)
+  .middleware(timingMiddleware)
+  .middleware(authMiddleware)
+  .register('create_user')
+  .as<UserInput, User>()
+  .using(someHandler);
+
+// Execution order: loggingMiddleware → timingMiddleware → authMiddleware → handler
+```
+
+### Combining Middleware
+
+Combine global and per-procedure middleware:
+
+```typescript
+// Global logging + timing for all procedures
+const base = middleware(api(container()), loggingMiddleware)
+  .middleware(timingMiddleware);
+
+const app = base
+  .register('create_user')
+  .as<UserInput, User>()
+  .middleware(validationMiddleware)  // Add validation to this one only
+  .using(someHandler);
+
+// Execution order: loggingMiddleware → timingMiddleware → validationMiddleware → handler
+```
+
+### Chained `.middleware()` — Automatic `next` Inference
+
+Chain multiple `.middleware()` calls to build a multi-layer middleware pipeline. Register them **innermost first** (closest to handler), then outward (closest to caller). TypeScript infers the `next` type at every position — you only annotate `input`.
+
+```typescript
 const app = api(container())
-  .register('get_user')
-  .as<number, User>()  // Handler types
-  .middleware(compound(apiLayer, validationLayer))
+  .register('complexAuth')
+  .as<number, string>()  // Handler: number → string
+  // Layer 3 (innermost): next = handler → (number) => Promise<string>
+  .middleware(async (input: number, next, _) => {
+    const raw = await next(input);  // raw: string ✓
+    return raw.toUpperCase();
+  })
+  // Layer 2: next = L3 → (number) => Promise<string>
+  .middleware(async (input: { id: number; verified: boolean }, next, _) => {
+    if (!input.verified) throw new Error('Not verified');
+    const data = await next(input.id);  // data: string ✓
+    return `[${data}]`;
+  })
+  // Layer 1 (outermost): next = L2 → ({ id, verified }) => Promise<string>
+  .middleware(async (input: { token: string; userId: string }, next, _) => {
+    if (input.token !== 'secret') throw new Error('Unauthorized');
+    const result = await next({ id: Number.parseInt(input.userId), verified: true });
+    return `AUTHENTICATED: ${result}`;  // result: string ✓
+  })
+  .using(handler);
+
+await app.complexAuth({ token: 'secret', userId: '99' });
+// Execution flow (onion pattern):
+// 1. Layer 1: Authenticates → passes { id: 99, verified: true }
+// 2. Layer 2: Authorizes → passes 99
+// 3. Layer 3: Transforms → passes 99
+// 4. Handler: Returns "user_99"
+// 5. Layer 3: Returns "USER_99"
+// 6. Layer 2: Returns "[USER_99]"
+// 7. Layer 1: Returns "AUTHENTICATED: [USER_99]"
+```
+
+**Why innermost first?** TypeScript processes types left-to-right. The first `.middleware()` call has its `next` anchored to the handler types from `.as<I, O>()`. Each subsequent call knows the previous middleware's types, so `next` is always fully resolved — no manual typing needed.
+
+### Pre-Typed Middleware Variables
+
+You can also declare middleware with explicit `Middleware<I, O, NextI, NextO>` types and chain them:
+
+```typescript
+// Layer 2 (INNER - closer to handler)
+const validationLayer: Middleware<
+  { id: number },   // I: receives from outer
+  string,            // O: returns to outer
+  number,            // NextI: passes to handler
+  { name: string }   // NextO: receives from handler
+> = async (input, next, _) => {
+  const user = await next(input.id);
+  return `${user.name}`;
+};
+
+// Layer 1 (OUTER - defines external API)
+const authLayer: Middleware<
+  { userId: string; token: string },  // I: external input
+  string,                              // O: external output
+  { id: number },                      // NextI: passes to inner
+  string                               // NextO: receives from inner
+> = async (input, next, _) => {
+  if (input.token !== 'valid') throw new Error('Unauthorized');
+  return (await next({ id: Number.parseInt(input.userId) })).toUpperCase();
+};
+
+const app = api(container())
+  .register('process_user')
+  .as<number, { name: string }>()  // Handler types
+  .middleware(validationLayer)       // inner first
+  .middleware(authLayer)             // outer wraps it
   .using(userHandler);
 
-// External API signature: { userId: string; token: string } → { status: string; data: User }
-await app.get_user({ userId: '123', token: 'valid' });
+// External API: { userId: string; token: string } → string
+await app.process_user({ userId: '123', token: 'valid' });
 ```
+
+TypeScript ensures at compile time:
+- `authLayer.NextI` matches `validationLayer.I` ✓
+- `authLayer.NextO` matches `validationLayer.O` ✓
+- `validationLayer.NextI` matches handler input from `.as<>()` ✓
+- `validationLayer.NextO` matches handler output from `.as<>()` ✓
 
 ### Custom Middleware
 
