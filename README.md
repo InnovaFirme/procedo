@@ -9,7 +9,7 @@ A type-safe, fluent TypeScript container for executing procedures and handlers w
 - 🔌 **Global Config**: Set global middleware and default factory directly on the container
 - ⚡ **Proxy Pattern**: Access procedures as properties: `app.procedureName()`
 - 🎭 **Immutable Containers**: Each registration returns a new typed container
-- ⛔ **Cancellation Tokens**: Built-in support for operation cancellation
+- ⛔ **Cancellation & Compensations**: Built-in support for Saga-like rollback tasks
 - 🐫 **CamelCase Converter**: Access snake_case procedures with camelCase via `jscriptify()`
 - 🗃️ **Database Agnostic**: Works with any database or handler implementation
 
@@ -744,50 +744,99 @@ console.log(result.total.toFixed(2));
 // console.log(result.invalid);
 ```
 
-## Error Handling
+## Cancellation & Compensation Tasks (Saga Pattern)
 
-Use middleware for error handling and compensation logic:
+Procedo provides a built-in mechanism for handling operation cancellation and performing compensation tasks (similar to the Saga pattern) when an error occurs or a process is aborted.
+
+### CancellationToken
+
+Every handler and middleware receives a `CancellationToken` as its last argument. This token allows you to register cleanup tasks, check for cancellation state, or manually trigger a rollback.
+
+#### The `CancellationToken` API
+
+- `readonly isCancelled: boolean`: Returns `true` if the token has been cancelled.
+- `cancel(): void`: Triggers cancellation: sets `isCancelled` to `true`, executes all registered compensation tasks in reverse order, and throws a `"Cancelled"` error.
+- `check(): void`: Throws a `"Cancelled"` error if `isCancelled` is `true`.
+- `compensation(fn: () => void | Promise<void>): void`: Registers a task to be executed if `cancel()` is called.
+
+### Compensation Tasks
+
+Compensation tasks are "undo" operations. For example, if you create a record in a database, you might register a compensation task to delete it if the rest of the procedure fails.
+
+**Key Rule:** Compensations are executed in **reverse order** (LIFO). This ensures that the most recent action is undone first, mirroring the natural undo process of a complex transaction.
 
 ```typescript
-const errorHandlingMiddleware: Middleware = async (input, next, token) => {
+import { api, container, Handler } from 'procedo';
+
+const createUserProfile: Handler = async (input, token) => {
+  // 1. Create user in DB
+  const user = await db.users.create(input);
+  
+  // Register compensation to delete the user if subsequent steps fail
+  token.compensation(async () => {
+    await db.users.delete(user.id);
+    console.log(`Rollback: User ${user.id} removed`);
+  });
+
+  // 2. Assign initial permissions
+  await permissions.assign(user.id, ['base_user']);
+  
+  // Register compensation to revoke permissions
+  token.compensation(async () => {
+    await permissions.revokeAll(user.id);
+    console.log(`Rollback: Permissions revoked`);
+  });
+
+  // 3. Send welcome email (might fail)
+  try {
+    await email.sendWelcome(user.email);
+  } catch (err) {
+    // If the email fails and we consider it critical, we trigger the rollback
+    token.cancel(); 
+    // This will execute: 
+    //   1. Revoke permissions
+    //   2. Delete user
+    //   3. Throw "Cancelled"
+  }
+
+  return user;
+};
+```
+
+### Manual vs Automatic Cancellation
+
+By default, compensations only run if `token.cancel()` is called. You can use middleware to implement an "auto-rollback on any error" policy:
+
+```typescript
+const autoRollbackMiddleware: Middleware = async (input, next, token) => {
   try {
     return await next(input);
   } catch (error) {
-    console.error('Operation failed:', error);
-    // Perform compensation/rollback here
+    // If an error occurred and we haven't cancelled yet, trigger rollbacks
+    if (!token.isCancelled) {
+      try {
+        token.cancel();
+      } catch (cancelError) {
+        // We catch the "Cancelled" throw to re-throw the original error instead
+        // This keeps the original error stack but ensures rollbacks are done
+        throw error;
+      }
+    }
     throw error;
   }
 };
-
-const app = api(container())
-  .register<UserInput, User>('create_user')
-  .middleware(errorHandlingMiddleware)
-  .using(someHandler);
-
-try {
-  const user = await app.create_user(userData);
-  console.log('User created:', user);
-} catch (error) {
-  console.error('Failed to create user:', error);
-}
 ```
 
-## Cancellation
+### Checking for Cancellation
 
-All handlers receive a cancellation token:
+In long-running procedures or loops, it's good practice to periodically call `token.check()` to stop execution as soon as possible if the process was cancelled elsewhere.
 
 ```typescript
-import type { Handler } from 'procedo';
-
-const customHandler: Handler = async (input, token) => {
-  token.check(); // Throws if cancelled
-  
-  // Your logic here
-  const result = await someAsyncOperation();
-  
-  token.check(); // Check again
-  
-  return result;
+const batchProcess: Handler = async (items, token) => {
+  for (const item of items) {
+    token.check(); // Stops and throws if cancelled
+    await processItem(item);
+  }
 };
 ```
 
@@ -824,4 +873,4 @@ ISC
 
 ---
 
-**Keywords:** typescript, handler-factory, procedure-container, database-agnostic, dependency-injection, middleware, type-safe, fluent-api, snake-case, camelcase, naming-convention, proxy-pattern, immutable, cancellation-token
+**Keywords:** typescript, handler-factory, procedure-container, database-agnostic, dependency-injection, middleware, type-safe, fluent-api, snake-case, camelcase, naming-convention, proxy-pattern, immutable, cancellation-token, compensation-tasks, saga-pattern
