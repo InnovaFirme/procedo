@@ -5,12 +5,11 @@ A type-safe, fluent TypeScript container for executing procedures and handlers w
 ## Features
 
 - 🔒 **Type-Safe**: Full TypeScript support with generic type inference
-- 🎯 **Fluent API**: Chain calls with `.register().as<I, O>().using(factory)`
-- 🔌 **Middleware Support**: Chain middleware with full type inference via `.middleware()`
+- 🔄 **Fluent API**: Chain calls with `.register().middleware().using(factory)`
+- 🔌 **Global Config**: Set global middleware and default factory directly on the container
 - ⚡ **Proxy Pattern**: Access procedures as properties: `app.procedureName()`
 - 🎭 **Immutable Containers**: Each registration returns a new typed container
 - ⛔ **Cancellation Tokens**: Built-in support for operation cancellation
-- 🔄 **Adapter Pattern**: Multiple adapters for different use cases (`api`, `using`, `middleware`, `jscriptify`)
 - 🐫 **CamelCase Converter**: Access snake_case procedures with camelCase via `jscriptify()`
 - 🗃️ **Database Agnostic**: Works with any database or handler implementation
 
@@ -66,9 +65,8 @@ const customHandler = (name: string) => async (input: any) => {
 
 // Create a type-safe container
 const app = api(container())
-  .register('my_procedure')
-  .as<{ userId: number }, { success: boolean }>()
-  .using(customHandler);
+  .using(customHandler)
+  .register('my_procedure');
 
 // Call as a method
 const result = await app.my_procedure({ userId: 123 });
@@ -99,9 +97,8 @@ type Migration = {
 // Create a container with type-safe procedure registration
 // PostgreSQL procedures use snake_case naming convention
 const app = api(container())
-  .register('get_migrations')  // snake_case for PostgreSQL
-  .as<undefined, Migration[]>()
-  .using(postgres(pool));
+  .using(postgres(pool))
+  .register<undefined, Migration[]>('get_migrations');
 
 // Call procedures as methods
 const migrations = await app.get_migrations();
@@ -149,36 +146,31 @@ const c = container();
 
 ### API Adapter
 
-The `api()` adapter wraps a container and provides property-based access to procedures via JavaScript Proxy.
+The `api()` adapter wraps a container and provides a fluent interface for registration and property-based access via JavaScript Proxy.
 
 ```typescript
 import { api, container } from 'procedo';
 
 const app = api(container())
-  .register('myProcedure')
-  .as<InputType, OutputType>()
-  .using(someHandler);
+  .using(someHandler)
+  .register<InputType, OutputType>('myProcedure');
 
 // Call as a method
 const result = await app.myProcedure(input);
 ```
 
-### Using Adapter
+### Global Configuration
 
-The `using()` adapter provides a default factory so you don't need to pass it on every registration.
+You can set a default factory or global middleware that applies to all subsequent registrations:
 
 ```typescript
-import { using, api, container } from 'procedo';
-
-const app = using(api(container()), someHandler)
-  .register('procedure_one')
-  .as<void, string[]>()
-  .register('procedure_two')
-  .as<number, boolean>();
-
-// Factory is applied automatically
-const result1 = await app.procedure_one();
-const result2 = await app.procedure_two(42);
+const app = api(container())
+  .using(defaultHandler)
+  .middleware(globalLogger)
+  .register('proc1') // uses defaultHandler + globalLogger
+  .register('proc2') // uses defaultHandler + globalLogger
+  .using(specialHandler)
+  .register('proc3'); // uses specialHandler + globalLogger
 ```
 
 ## API Reference
@@ -196,51 +188,20 @@ Creates a new immutable container instance.
 
 ### `api<T>(source: ContainerLike<T>)`
 
-Wraps a container with a Proxy to enable property-based access.
+Wraps a container with a Proxy to enable property-based access and provides global configuration methods.
+
+**Methods:**
+- `.using(factory)` - Sets the default handler factory
+- `.middleware(mw)` - Adds a global middleware layer
+- `.register(name)` - Starts registration of a new procedure
 
 **Example:**
 ```typescript
 const app = api(container())
-  .register('get_users')
-  .as<void, User[]>()
-  .using(someHandler);
+  .using(someHandler)
+  .middleware(logger)
+  .register<void, User[]>('get_users');
 
-const users = await app.get_users();
-```
-
-### `using<T>(source: ContainerLike<T>, factory: HandlerFactory)`
-
-Wraps a container with a default handler factory, so you don't need to pass it on every `.using()`.
-
-**Example:**
-```typescript
-const app = using(api(container()), someHandler)
-  .register('get_orders')
-  .as<string, Order[]>();
-
-const orders = await app.get_orders('2024-01');
-```
-
-### `middleware<T>(source: ContainerLike<T>, mw: Middleware)`
-
-Wraps a container with a default middleware that applies to all procedures.
-
-**Example:**
-```typescript
-const loggingMw: Middleware = async (input, next, token) => {
-  console.log('Before:', input);
-  const result = await next(input);
-  console.log('After:', result);
-  return result;
-};
-
-const app = middleware(api(container()), loggingMw)
-  .middleware(timingMw)       // chain additional global layers
-  .register('get_users')
-  .as<void, User[]>()
-  .using(someHandler);
-
-// loggingMw → timingMw applied automatically to all procedures
 const users = await app.get_users();
 ```
 
@@ -348,18 +309,14 @@ const app = api(container())
 
 ### Global Middleware
 
-Use the `middleware()` adapter to apply middleware to all procedures:
+Use `.middleware()` on the `api()` instance to apply middleware to all procedures registered afterwards:
 
 ```typescript
-import { middleware } from 'procedo';
-
-const app = middleware(api(container()), loggingMiddleware)
-  .register('create_user')
-  .as<UserInput, User>()
+const app = api(container())
+  .middleware(loggingMiddleware)
   .using(someHandler)
-  .register('update_user')
-  .as<UserUpdate, User>()
-  .using(someHandler);
+  .register<UserInput, User>('create_user')
+  .register<UserUpdate, User>('update_user');
 
 // loggingMiddleware is applied to both procedures
 ```
@@ -369,25 +326,12 @@ const app = middleware(api(container()), loggingMiddleware)
 Chain `.middleware()` calls to add multiple global layers:
 
 ```typescript
-const timingMiddleware: Middleware = async (input, next, token) => {
-  const start = Date.now();
-  const result = await next(input);
-  console.log(`Executed in ${Date.now() - start}ms`);
-  return result;
-};
-
-const authMiddleware: Middleware = async (input, next, token) => {
-  console.log('Authenticating...');
-  return await next(input);
-};
-
-// Chain global middlewares — each wraps the previous
-const app = middleware(api(container()), loggingMiddleware)
+const app = api(container())
+  .middleware(loggingMiddleware)
   .middleware(timingMiddleware)
   .middleware(authMiddleware)
-  .register('create_user')
-  .as<UserInput, User>()
-  .using(someHandler);
+  .using(someHandler)
+  .register<UserInput, User>('create_user');
 
 // Execution order: loggingMiddleware → timingMiddleware → authMiddleware → handler
 ```
@@ -398,14 +342,12 @@ Combine global and per-procedure middleware:
 
 ```typescript
 // Global logging + timing for all procedures
-const base = middleware(api(container()), loggingMiddleware)
-  .middleware(timingMiddleware);
-
-const app = base
-  .register('create_user')
-  .as<UserInput, User>()
-  .middleware(validationMiddleware)  // Add validation to this one only
-  .using(someHandler);
+const app = api(container())
+  .middleware(loggingMiddleware)
+  .middleware(timingMiddleware)
+  .using(someHandler)
+  .register<UserInput, User>('create_user')
+  .middleware(validationMiddleware); // Add validation to this one only
 
 // Execution order: loggingMiddleware → timingMiddleware → validationMiddleware → handler
 ```

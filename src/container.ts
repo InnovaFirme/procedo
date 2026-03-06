@@ -10,31 +10,17 @@ function compose(factory: HandlerFactory, mw: Middleware<any, any>, name: string
     };
 }
 
-type RegisterBuilder<T extends Record<string, any>, Name extends string> = {
-    as<I, O>(): RegisterBuilderWithTypes<T, Name, I, O>;
-    middleware(mw: Middleware<any, any>): RegisterBuilderWithMiddleware<T, Name>;
-};
-
-type RegisterBuilderWithTypes<T extends Record<string, any>, Name extends string, I, O> = {
+type RegisterBuilder<T extends Record<string, any>, Name extends string, I, O> = {
     using(factory: HandlerFactory): ContainerInstance<T & { [K in Name]: { input: I; output: O } }>;
-    middleware(mw: Middleware<I, O>): RegisterBuilderComplete<T, Name, I, O>;
-};
-
-type RegisterBuilderWithMiddleware<T extends Record<string, any>, Name extends string> = {
-    as<I, O>(): RegisterBuilderComplete<T, Name, I, O>;
-    using(factory: HandlerFactory): ContainerInstance<T & { [K in Name]: { input: any; output: any } }>;
-};
-
-type RegisterBuilderComplete<T extends Record<string, any>, Name extends string, I, O> = {
-    using(factory: HandlerFactory): ContainerInstance<T & { [K in Name]: { input: I; output: O } }>;
+    middleware(mw: Middleware<I, O>): RegisterBuilder<T, Name, I, O>;
 };
 
 type ContainerInstance<T extends Record<string, any>> = {
-    register<Name extends string>(name: Name): RegisterBuilder<T, Name>;
+    /** @internal Phantom type carrier for generic inference — do not use at runtime */
+    readonly __$type: T;
 
-    as<I, O, LastKey extends string = string>(): ContainerInstance<
-        Omit<T, LastKey> & { [K in LastKey]: { input: I; output: O } }
-    >;
+    register<Name extends string>(name: Name): RegisterBuilder<T, Name, any, any>;
+    register<I, O>(name: string): RegisterBuilder<T, string, I, O>;
 
     execute<K extends keyof T>(
         name: K,
@@ -83,45 +69,18 @@ export function container<T extends Record<string, any> = {}>(
     }
 
     return {
-        // register ahora retorna un builder
-        register: <Name extends string>(name: Name): RegisterBuilder<T, Name> => {
-            return {
-                as: <I, O>(): RegisterBuilderWithTypes<T, Name, I, O> => {
-                    return {
-                        using: (factory: HandlerFactory) => {
-                            return _doRegister<I, O, Name>(name, factory);
-                        },
-                        middleware: (mw: Middleware<I, O>): RegisterBuilderComplete<T, Name, I, O> => {
-                            return {
-                                using: (factory: HandlerFactory) => {
-                                    return _doRegister<I, O, Name>(name, factory, mw);
-                                }
-                            };
-                        }
-                    };
+        register: <Name extends string>(name: Name) => ({
+            using: (factory: HandlerFactory) => {
+                return _doRegister<any, any, Name>(name, factory);
+            },
+            middleware: (mw: Middleware<any, any>) => ({
+                using: (factory: HandlerFactory) => {
+                    return _doRegister<any, any, Name>(name, factory, mw);
                 },
-                middleware: (mw: Middleware<any, any>): RegisterBuilderWithMiddleware<T, Name> => {
-                    return {
-                        as: <I, O>(): RegisterBuilderComplete<T, Name, I, O> => {
-                            return {
-                                using: (factory: HandlerFactory) => {
-                                    return _doRegister<I, O, Name>(name, factory, mw);
-                                }
-                            };
-                        },
-                        using: (factory: HandlerFactory) => {
-                            return _doRegister<any, any, Name>(name, factory, mw);
-                        }
-                    };
-                }
-            };
-        },
-
-        // @ts-expect-error
-        as: (<I, O>() => {
-            return container<any>(registry);
-        }) as any,
+                middleware: () => { throw new Error('Middleware chaining at container level is not supported. Use api() adapter for chaining.'); }
+            })
+        }),
 
         execute
-    };
+    } as unknown as ContainerInstance<T>;
 }
