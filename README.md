@@ -5,7 +5,7 @@ A type-safe, fluent TypeScript container for executing procedures and handlers w
 ## Features
 
 - 🔒 **Type-Safe**: Full TypeScript support with generic type inference
-- 🔄 **Fluent API**: Chain calls with `.register().middleware().using(factory)`
+- 🔄 **Fluent API**: Chain calls with `.using(factory).register().middleware()`
 - 🔌 **Global Config**: Set global middleware and default factory directly on the container
 - ⚡ **Proxy Pattern**: Access procedures as properties: `app.procedureName()`
 - 🎭 **Immutable Containers**: Each registration returns a new typed container
@@ -114,9 +114,8 @@ import { jscriptify } from 'procedo';
 
 // Works with snake_case procedures (common in databases)
 const app = api(container())
-  .register('get_migration_history')  // snake_case
-  .as<void, Migration[]>()
-  .using(someHandler);
+  .using(someHandler)
+  .register<void, Migration[]>('get_migration_history');
 
 // Access with camelCase
 const jsApi = jscriptify(app);
@@ -124,9 +123,8 @@ const history = await jsApi.getMigrationHistory();
 
 // Also works if procedures are registered in camelCase
 const app2 = api(container())
-  .register('getUserProfile')  // camelCase
-  .as<number, Profile>()
-  .using(someHandler);
+  .using(someHandler)
+  .register<number, Profile>('getUserProfile');
 
 const jsApi2 = jscriptify(app2);
 const profile = await jsApi2.getUserProfile(123);  // Works!
@@ -184,7 +182,6 @@ Creates a new immutable container instance.
 **Methods:**
 - `register(name: string)` - Returns a builder to configure the procedure
 - `execute(name: string, input?: any)` - Executes a registered procedure
-- `as<I, O>()` - Re-types the last registered procedure
 
 ### `api<T>(source: ContainerLike<T>)`
 
@@ -225,8 +222,7 @@ When you call `jsApi.getUserOrders()`, it will:
 **Example with snake_case procedures:**
 ```typescript
 const app = api(container())
-  .register('get_user_orders')  // snake_case (common in databases)
-  .as<number, Order[]>()
+  .register<number, Order[]>('get_user_orders')
   .using(someHandler);
 
 const jsApi = jscriptify(app);
@@ -238,8 +234,7 @@ const orders = await jsApi.getUserOrders(userId);
 **Example with camelCase procedures:**
 ```typescript
 const app = api(container())
-  .register('getUserOrders')  // camelCase
-  .as<number, Order[]>()
+  .register<number, Order[]>('getUserOrders')
   .using(someHandler);
 
 const jsApi = jscriptify(app);
@@ -279,8 +274,7 @@ import { postgres } from 'procedo';
 const pool = new Pool({...});
 
 const app = api(container())
-  .register('get_users')
-  .as<void, User[]>()
+  .register<void, User[]>('get_users')
   .using(postgres(pool));
 ```
 
@@ -301,8 +295,7 @@ const loggingMiddleware: Middleware = async (input, next, token) => {
 };
 
 const app = api(container())
-  .register('create_user')
-  .as<UserInput, User>()
+  .register<UserInput, User>('create_user')
   .middleware(loggingMiddleware)  // Apply to this procedure only
   .using(someHandler);
 ```
@@ -358,8 +351,7 @@ Chain multiple `.middleware()` calls to build a multi-layer middleware pipeline.
 
 ```typescript
 const app = api(container())
-  .register('complexAuth')
-  .as<number, string>()  // Handler: number → string
+  .register<number, string>('complexAuth')
   // Layer 3 (innermost): next = handler → (number) => Promise<string>
   .middleware(async (input: number, next, _) => {
     const raw = await next(input);  // raw: string ✓
@@ -390,7 +382,7 @@ await app.complexAuth({ token: 'secret', userId: '99' });
 // 7. Layer 1: Returns "AUTHENTICATED: [USER_99]"
 ```
 
-**Why innermost first?** TypeScript processes types left-to-right. The first `.middleware()` call has its `next` anchored to the handler types from `.as<I, O>()`. Each subsequent call knows the previous middleware's types, so `next` is always fully resolved — no manual typing needed.
+**Why innermost first?** TypeScript processes types left-to-right. The first `.middleware()` call has its `next` anchored to the handler types from `.register<I, O>()`. Each subsequent call knows the previous middleware's types, so `next` is always fully resolved — no manual typing needed.
 
 ### Pre-Typed Middleware Variables
 
@@ -420,8 +412,7 @@ const authLayer: Middleware<
 };
 
 const app = api(container())
-  .register('process_user')
-  .as<number, { name: string }>()  // Handler types
+  .register<number, { name: string }>('process_user')
   .middleware(validationLayer)       // inner first
   .middleware(authLayer)             // outer wraps it
   .using(userHandler);
@@ -433,8 +424,8 @@ await app.process_user({ userId: '123', token: 'valid' });
 TypeScript ensures at compile time:
 - `authLayer.NextI` matches `validationLayer.I` ✓
 - `authLayer.NextO` matches `validationLayer.O` ✓
-- `validationLayer.NextI` matches handler input from `.as<>()` ✓
-- `validationLayer.NextO` matches handler output from `.as<>()` ✓
+- `validationLayer.NextI` matches handler input from `.register<>()` ✓
+- `validationLayer.NextO` matches handler output from `.register<>()` ✓
 
 ### Custom Middleware
 
@@ -483,8 +474,7 @@ Transform the input before it reaches the handler:
 ```typescript
 // Handler expects a number
 const app = api(container())
-  .register('getUserData')
-  .as<number, UserData>()
+  .register<number, UserData>('getUserData')
   .middleware<{ userId: number; metadata: string }>(
     async (input, next, token) => {
       // Receive { userId, metadata }, pass only userId to handler
@@ -504,8 +494,7 @@ Transform the output from the handler:
 ```typescript
 // Handler returns raw data
 const app = api(container())
-  .register('fetchData')
-  .as<number, RawData>()
+  .register<number, RawData>('fetchData')
   .middleware<number, FormattedResponse>(
     async (input, next, token) => {
       const rawData = await next(input);
@@ -533,8 +522,7 @@ type RequestPayload = { userId: number; options: Options };
 type ResponseEnvelope = { success: boolean; data: UserData };
 
 const app = api(container())
-  .register('getUser')
-  .as<number, UserData>()  // Handler types
+  .register<number, UserData>('getUser')
   .middleware<RequestPayload, ResponseEnvelope>(
     async (input, next, token) => {
       // Transform input: extract userId
@@ -585,8 +573,7 @@ const apiMiddleware: Middleware<
 };
 
 const app = api(container())
-  .register('get_user_data')
-  .as<number, UserData>()
+  .register<number, UserData>('get_user_data')
   .middleware(apiMiddleware)
   .using(postgres(pool));
 
@@ -617,8 +604,7 @@ const customHandler: HandlerFactory = (name: string) => {
 };
 
 const app = api(container())
-  .register('my_operation')
-  .as<Input, Output>()
+  .register<Input, Output>('my_operation')
   .using(customHandler);
 ```
 
@@ -633,8 +619,7 @@ import { postgres } from 'procedo';
 const pool = new Pool({ /* config */ });
 
 const app = api(container())
-  .register('get_users')
-  .as<void, User[]>()
+  .register<void, User[]>('get_users')
   .using(postgres(pool));
 ```
 
@@ -670,15 +655,10 @@ $$ LANGUAGE plpgsql;
 
 ```typescript
 const app = api(container())
-  .register('get_users')
-  .as<void, User[]>()
   .using(someHandler)
-  .register('get_user')
-  .as<number, User>()
-  .using(someHandler)
-  .register('create_user')
-  .as<UserInput, User>()
-  .using(someHandler);
+  .register<void, User[]>('get_users')
+  .register<number, User>('get_user')
+  .register<UserInput, User>('create_user');
 
 const allUsers = await app.get_users();
 const user = await app.get_user(1);
@@ -693,12 +673,12 @@ const user2 = await jsApi.getUser(1);
 ### Using with Default Factory
 
 ```typescript
-const db = using(api(container()), someHandler);
+const db = api(container()).using(someHandler);
 
 const app = db
-  .register('get_users').as<void, User[]>()
-  .register('get_orders').as<number, Order[]>()
-  .register('get_products').as<void, Product[]>();
+  .register<void, User[]>('get_users')
+  .register<number, Order[]>('get_orders')
+  .register<void, Product[]>('get_products');
 
 const users = await app.get_users();
 const orders = await app.get_orders(userId);
@@ -710,8 +690,7 @@ const products = await app.get_products();
 ```typescript
 // TypeScript infers the return type automatically
 const app = api(container())
-  .register('get_user')
-  .as<number, { id: number; name: string }>()
+  .register<number, { id: number; name: string }>('get_user')
   .using(someHandler);
 
 // result is typed as { id: number; name: string }
@@ -724,15 +703,10 @@ console.log(result.name); // ✅ Type-safe
 ```typescript
 // Your procedures use snake_case (common in databases)
 const app = api(container())
-  .register('get_user_profile')
-  .as<number, UserProfile>()
   .using(someHandler)
-  .register('list_active_orders')
-  .as<void, Order[]>()
-  .using(someHandler)
-  .register('update_user_settings')
-  .as<SettingsInput, Settings>()
-  .using(someHandler);
+  .register<number, UserProfile>('get_user_profile')
+  .register<void, Order[]>('list_active_orders')
+  .register<SettingsInput, Settings>('update_user_settings');
 
 // Convert to JavaScript/TypeScript naming convention
 const jsApi = jscriptify(app);
@@ -757,8 +731,7 @@ type Input = { userId: number; year: number };
 type Output = { total: number; currency: string };
 
 const app = api(container())
-  .register('get_order_total')
-  .as<Input, Output>()
+  .register<Input, Output>('get_order_total')
   .using(someHandler);
 
 // ✅ Type-safe input
@@ -787,8 +760,7 @@ const errorHandlingMiddleware: Middleware = async (input, next, token) => {
 };
 
 const app = api(container())
-  .register('create_user')
-  .as<UserInput, User>()
+  .register<UserInput, User>('create_user')
   .middleware(errorHandlingMiddleware)
   .using(someHandler);
 
