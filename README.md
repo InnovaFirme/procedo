@@ -820,6 +820,22 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 ISC
 
 
+## Changelog
+
+### v2.0.0
+- **Native camelCase support**: Procedures registered in `snake_case` can now be accessed directly using `camelCase` through the `api()` adapter with full type safety.
+- **Removed `jscriptify`**: Consolidating the API by removing the redundant `jscriptify` utility in favor of built-in native support.
+- **Middleware Type Inference**: Significant improvements to TypeScript inference when chaining multiple middlewares with input/output transformations.
+- **Global Configuration**: Added support for setting global middleware and default factories directly on the container instance.
+
+### v1.1.0
+- **Cancellation & Saga Pattern**: Introduced `CancellationToken` and compensation tasks to handle complex rollbacks and procedure cancellations.
+- **Documentation**: Translated the entire documentation to English and improved the clarity of the installation and TypeScript configuration sections.
+- **API Streamlining**: Refactored the `register()` method and middleware registration to support a more fluent chaining API.
+
+### v1.0.0
+- **Initial Release**: Core functionality for type-safe procedure containers and PostgreSQL handler support.
+
 ---
 
 **Keywords:** typescript, handler-factory, procedure-container, database-agnostic, dependency-injection, middleware, type-safe, fluent-api, snake-case, camelcase, naming-convention, proxy-pattern, immutable, cancellation-token, compensation-tasks, saga-pattern
