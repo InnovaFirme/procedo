@@ -550,7 +550,6 @@ import type { HandlerFactory } from 'procedo';
 const customHandler: HandlerFactory = (name: string) => {
   return async (input: any, token) => {
     // Your custom logic - could be REST API, RPC, etc.
-    token.check(); // Check for cancellation
     console.log(`Executing ${name}`);
     return someAsyncOperation(name, input);
   };
@@ -699,13 +698,12 @@ Procedo provides a built-in mechanism for handling operation cancellation and pe
 
 ### CancellationToken
 
-Every handler and middleware receives a `CancellationToken` as its last argument. This token allows you to register cleanup tasks, check for cancellation state, or manually trigger a rollback.
+Every handler and middleware receives a `CancellationToken` as its last argument. This token allows you to register cleanup tasks, monitor cancellation state, or manually trigger a rollback.
 
 #### The `CancellationToken` API
 
 - `readonly isCancelled: boolean`: Returns `true` if the token has been cancelled.
 - `cancel(): void`: Triggers cancellation: sets `isCancelled` to `true`, executes all registered compensation tasks in reverse order, and throws a `"Cancelled"` error.
-- `check(): void`: Throws a `"Cancelled"` error if `isCancelled` is `true`.
 - `compensation(fn: () => void | Promise<void>): void`: Registers a task to be executed if `cancel()` is called.
 
 ### Compensation Tasks
@@ -752,6 +750,23 @@ const createUserProfile: Handler = async (input, token) => {
 };
 ```
 
+### Exception Handling
+
+Since `token.cancel()` throws a `"Cancelled"` error, the entire procedure execution will fail with this exception unless caught. This ensures that the execution stops immediately after rollbacks are completed.
+
+```typescript
+try {
+  await app.createUserProfile({ name: 'John Doe' });
+} catch (error) {
+  if (error.message === 'Cancelled') {
+    // Operation was rolled back and cancelled
+  } else {
+    // Some other error occurred
+    console.error('Operation failed:', error);
+  }
+}
+```
+
 ### Manual vs Automatic Cancellation
 
 By default, compensations only run if `token.cancel()` is called. You can use middleware to implement an "auto-rollback on any error" policy:
@@ -772,19 +787,6 @@ const autoRollbackMiddleware: Middleware = async (input, next, token) => {
       }
     }
     throw error;
-  }
-};
-```
-
-### Checking for Cancellation
-
-In long-running procedures or loops, it's good practice to periodically call `token.check()` to stop execution as soon as possible if the process was cancelled elsewhere.
-
-```typescript
-const batchProcess: Handler = async (items, token) => {
-  for (const item of items) {
-    token.check(); // Stops and throws if cancelled
-    await processItem(item);
   }
 };
 ```
@@ -827,6 +829,7 @@ ISC
 - **Removed `jscriptify`**: Consolidating the API by removing the redundant `jscriptify` utility in favor of built-in native support.
 - **Middleware Type Inference**: Significant improvements to TypeScript inference when chaining multiple middlewares with input/output transformations.
 - **Global Configuration**: Added support for setting global middleware and default factories directly on the container instance.
+- **Simplified Cancellation API**: Removed `check()` method from `CancellationToken` in favor of a more direct `cancel()`, `compensation()` and standard exception handling approach.
 
 ### v1.1.0
 - **Cancellation & Saga Pattern**: Introduced `CancellationToken` and compensation tasks to handle complex rollbacks and procedure cancellations.
