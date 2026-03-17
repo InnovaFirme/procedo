@@ -14,7 +14,7 @@ describe("Api types with parameters", () => {
     function decorator(_c: Container) {
 
         let temp = _c
-            .register('testing_snake')
+            .register<unknown, string>('testing_snake')
             .middleware(async (i, next,) => next(i))
 
         return temp.testingSnake()
