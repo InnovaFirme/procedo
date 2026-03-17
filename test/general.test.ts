@@ -9,14 +9,15 @@ describe("Api types with parameters", () => {
         .using((name) => {
             return async (_, __) => name
         })
-        .register('testing_snake');
 
 
-    function decorator(_c: Container<{ testing_snake: { input: void; output: string } }>) {
-        _c
+    function decorator(_c: Container) {
+
+        let temp = _c
             .register('testing_snake')
             .middleware(async (i, next,) => next(i))
-        return _c.testingSnake()
+
+        return temp.testingSnake()
     }
 
     it('should return testing without error types', async () => {
