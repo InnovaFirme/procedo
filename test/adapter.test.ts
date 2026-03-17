@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { container } from '../src/container';
 import { api } from '../src/adapter';
 import { HandlerFactory, Middleware } from '../src/types';
